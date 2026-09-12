@@ -24,4 +24,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SepDownloadManager-v1
-          path: SepDownloadManager/bin/Release/SepDownloadManager.exe
+          path: SepDownloadManager/bin/Release/net48/SepDownloadManager.exe
