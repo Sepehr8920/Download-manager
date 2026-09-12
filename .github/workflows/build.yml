@@ -1,0 +1,24 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild SepDownloadManager.sln /p:Configuration=Release
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: SepDownloadManager-v1
+          path: SepDownloadManager/bin/Release/SepDownloadManager.exe
