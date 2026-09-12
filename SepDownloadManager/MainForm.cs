@@ -2,9 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SepDownloadManager
@@ -13,50 +10,54 @@ namespace SepDownloadManager
     {
         TextBox urlBox, fileBox;
         NumericUpDown partsBox;
-        Button addButton, pauseButton, resumeButton;
+        Button addButton;
         ProgressBar progress;
         Label status;
         DataGridView grid;
 
+        // List of all downloads
         readonly List<DownloadItem> items = new List<DownloadItem>();
+
+        // Timer to refresh the table
+        Timer refreshTimer;
 
         public MainForm()
         {
-            Text = "Sep Download Manager — v1";
-            Width = 900;
-            Height = 560;
-            MinimumSize = new Size(760, 460);
+            Text = "Sep Download Manager — v2";
+            Width = 1100;
+            Height = 600;
+            MinimumSize = new Size(900, 500);
             StartPosition = FormStartPosition.CenterScreen;
 
+            // ---------- Top bar ----------
             var top = new Panel
             {
                 Dock = DockStyle.Top,
                 Height = 105,
                 Padding = new Padding(10)
             };
-
             Controls.Add(top);
 
+            // URL box
             urlBox = new TextBox
             {
                 Left = 10,
                 Top = 10,
-                Width = 560
+                Width = 560,
+                Font = new Font("Segoe UI", 9)
             };
-
             top.Controls.Add(urlBox);
 
-            var urlHint = new Label
+            top.Controls.Add(new Label
             {
                 Left = 12,
                 Top = 32,
-                Text = "URL",
+                Text = "Download URL",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText
-            };
+            });
 
-            top.Controls.Add(urlHint);
-
+            // Parts count
             partsBox = new NumericUpDown
             {
                 Left = 580,
@@ -66,93 +67,83 @@ namespace SepDownloadManager
                 Maximum = 16,
                 Value = 4
             };
-
             top.Controls.Add(partsBox);
 
             top.Controls.Add(new Label
             {
                 Left = 660,
                 Top = 13,
-                Text = "parts",
+                Text = "Parts",
                 AutoSize = true
             });
 
+            // Save folder box
             fileBox = new TextBox
             {
                 Left = 10,
                 Top = 45,
                 Width = 560,
-                Text = System.IO.Path.Combine(
+                Text = Path.Combine(
                     Environment.GetFolderPath(
                         Environment.SpecialFolder.UserProfile),
                     "Downloads")
             };
-
             top.Controls.Add(fileBox);
 
+            // Start download button
             addButton = new Button
             {
                 Left = 580,
                 Top = 43,
                 Width = 155,
                 Height = 28,
-                Text = "Add & Download"
+                Text = "Start Download"
             };
-
-            addButton.Click += async (s, e) => await AddDownload();
-
+            addButton.Click += (s, e) => AddDownload();
             top.Controls.Add(addButton);
 
-            pauseButton = new Button
-            {
-                Left = 745,
-                Top = 10,
-                Width = 120,
-                Text = "Pause"
-            };
-
-            pauseButton.Click += (s, e) => SelectedPause();
-
-            top.Controls.Add(pauseButton);
-
-            resumeButton = new Button
-            {
-                Left = 745,
-                Top = 43,
-                Width = 120,
-                Text = "Resume"
-            };
-
-            resumeButton.Click += async (s, e) => await SelectedResume();
-
-            top.Controls.Add(resumeButton);
-
+            // ---------- Table ----------
             grid = new DataGridView
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 AllowUserToAddRows = false,
-                AutoSizeColumnsMode =
-                    DataGridViewAutoSizeColumnsMode.Fill,
-                SelectionMode =
-                    DataGridViewSelectionMode.FullRowSelect
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                RowHeadersVisible = false,
+                AllowUserToResizeRows = false,
+                Font = new Font("Segoe UI", 9)
             };
 
-            grid.Columns.Add("file", "File");
-            grid.Columns.Add("size", "Size");
+            grid.Columns.Add("file", "File Name");
+            grid.Columns.Add("size", "Total Size");
             grid.Columns.Add("downloaded", "Downloaded");
+            grid.Columns.Add("remaining", "Remaining");
             grid.Columns.Add("speed", "Speed");
-            grid.Columns.Add("state", "State");
+            grid.Columns.Add("state", "Status");
+
+            // Action column (buttons)
+            var actionCol = new DataGridViewButtonColumn
+            {
+                Name = "actions",
+                HeaderText = "Actions",
+                Width = 220,
+                FlatStyle = FlatStyle.Flat
+            };
+            grid.Columns.Add(actionCol);
+
+            grid.CellClick += Grid_CellClick;
 
             Controls.Add(grid);
+            grid.BringToFront();
 
+            // ---------- Bottom bar ----------
             var bottom = new Panel
             {
                 Dock = DockStyle.Bottom,
                 Height = 55,
                 Padding = new Padding(10)
             };
-
             Controls.Add(bottom);
 
             progress = new ProgressBar
@@ -162,55 +153,116 @@ namespace SepDownloadManager
                 Width = 600,
                 Height = 22
             };
-
             bottom.Controls.Add(progress);
 
             status = new Label
             {
                 Left = 620,
                 Top = 12,
-                Width = 240,
+                Width = 400,
                 Text = "Ready"
             };
-
             bottom.Controls.Add(status);
+
+            // ---------- Refresh timer ----------
+            refreshTimer = new Timer();
+            refreshTimer.Interval = 500; // every half second
+            refreshTimer.Tick += (s, e) => RefreshAllRows();
+            refreshTimer.Start();
+
+            // ---------- Load previous list ----------
+            LoadSavedItems();
         }
 
-        async Task AddDownload()
+        // ============================================
+        // Load saved downloads
+        // ============================================
+        void LoadSavedItems()
+        {
+            var saved = DownloadStore.LoadAll();
+
+            foreach (var s in saved)
+            {
+                var item = new DownloadItem(
+                    new Uri(s.Url),
+                    s.OutputPath,
+                    s.Parts);
+
+                item.Downloaded = s.Downloaded;
+                item.Total = s.Total;
+
+                // If it was closed mid-download, mark as paused
+                if (s.State == "Downloading")
+                    item.State = "Paused";
+                else
+                    item.State = s.State;
+
+                items.Add(item);
+
+                int row = grid.Rows.Add(
+                    Path.GetFileName(s.OutputPath),
+                    item.Total > 0 ? FormatBytes(item.Total) : "?",
+                    FormatBytes(item.Downloaded),
+                    item.Total > 0
+                        ? FormatBytes(item.Total - item.Downloaded)
+                        : "?",
+                    "-",
+                    item.State);
+
+                item.Row = row;
+                UpdateActionButton(item);
+            }
+
+            if (items.Count > 0)
+                status.Text = $"{items.Count} download(s) loaded";
+        }
+
+        // ============================================
+        // Start a new download
+        // ============================================
+        async void AddDownload()
         {
             if (!Uri.TryCreate(
                     urlBox.Text.Trim(),
                     UriKind.Absolute,
                     out var uri) ||
-                (uri.Scheme != "http" &&
-                 uri.Scheme != "https"))
+                (uri.Scheme != "http" && uri.Scheme != "https"))
             {
                 MessageBox.Show(
-                    "Enter a valid HTTP/HTTPS URL.");
-
+                    "Please enter a valid URL (starting with http or https).",
+                    "Invalid URL",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
                 return;
             }
 
             string dir = fileBox.Text.Trim();
 
             if (string.IsNullOrWhiteSpace(dir))
-            {
                 dir = Environment.GetFolderPath(
                     Environment.SpecialFolder.UserProfile);
-            }
 
             Directory.CreateDirectory(dir);
 
-            string name =
-                System.IO.Path.GetFileName(uri.LocalPath);
+            string name = Path.GetFileName(uri.LocalPath);
 
             if (string.IsNullOrWhiteSpace(name))
-            {
                 name = "download.bin";
-            }
 
-            string outputPath =
-                System.IO.Path.Combine(dir, name);
+            string outputPath = Path.Combine(dir, name);
+
+            // If this file was downloaded before, rename
+            int counter = 1;
+            string baseName = Path.GetFileNameWithoutExtension(name);
+            string ext = Path.GetExtension(name);
+
+            while (File.Exists(outputPath))
+            {
+                outputPath = Path.Combine(
+                    dir,
+                    $"{baseName} ({counter}){ext}");
+                counter++;
+            }
 
             var item = new DownloadItem(
                 uri,
@@ -220,126 +272,192 @@ namespace SepDownloadManager
             items.Add(item);
 
             int row = grid.Rows.Add(
-                name,
+                Path.GetFileName(outputPath),
                 "Checking...",
                 "0 B",
+                "?",
                 "-",
-                "Starting");
+                "Starting...");
 
             item.Row = row;
+            UpdateActionButton(item);
+
+            urlBox.Clear();
+
+            DownloadStore.Save(items);
 
             try
             {
-                await item.StartAsync(
-                    () => RefreshRow(item));
-
-                status.Text = "Completed";
+                await item.StartAsync();
+                status.Text = "Download completed";
             }
             catch (OperationCanceledException)
             {
-                status.Text = "Paused";
-                RefreshRow(item);
+                // User paused or cancelled
             }
             catch (Exception ex)
             {
                 item.State = "Error";
-                status.Text = ex.Message;
-                RefreshRow(item);
+                status.Text = "Error: " + ex.Message;
             }
+
+            DownloadStore.Save(items);
         }
 
-        void RefreshRow(DownloadItem x)
+        // ============================================
+        // Refresh all rows
+        // ============================================
+        void RefreshAllRows()
         {
             if (IsDisposed || !IsHandleCreated)
                 return;
 
-            BeginInvoke((Action)(() =>
+            foreach (var item in items)
             {
-                if (x.Row < 0 ||
-                    x.Row >= grid.Rows.Count)
-                    return;
+                if (item.Row < 0 || item.Row >= grid.Rows.Count)
+                    continue;
 
-                grid.Rows[x.Row].Cells[1].Value =
-                    x.Total >= 0
-                        ? FormatBytes(x.Total)
-                        : "?";
+                var row = grid.Rows[item.Row];
 
-                grid.Rows[x.Row].Cells[2].Value =
-                    FormatBytes(x.Downloaded);
+                row.Cells[1].Value = item.Total > 0
+                    ? FormatBytes(item.Total)
+                    : "?";
 
-                grid.Rows[x.Row].Cells[3].Value =
-                    x.Speed > 0
-                        ? FormatBytes((long)x.Speed) + "/s"
-                        : "-";
+                row.Cells[2].Value = FormatBytes(item.Downloaded);
 
-                grid.Rows[x.Row].Cells[4].Value =
-                    x.State;
+                row.Cells[3].Value = item.Total > 0
+                    ? FormatBytes(item.Total - item.Downloaded)
+                    : "?";
 
-                if (x.Total > 0)
+                row.Cells[4].Value = item.Speed > 0
+                    ? FormatBytes((long)item.Speed) + "/s"
+                    : "-";
+
+                row.Cells[5].Value = item.State;
+            }
+        }
+
+        // ============================================
+        // Click on action buttons
+        // ============================================
+        void Grid_CellClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0) return;
+            if (e.ColumnIndex != grid.Columns["actions"].Index) return;
+
+            var item = items[e.RowIndex];
+
+            // Open a small menu
+            var menu = new ContextMenuStrip();
+
+            if (item.State == "Downloading")
+            {
+                menu.Items.Add("⏸ Pause", null, (s, ev) =>
                 {
-                    long percentage =
-                        x.Downloaded * 100L / x.Total;
+                    item.Pause();
+                    UpdateActionButton(item);
+                    DownloadStore.Save(items);
+                });
+            }
 
-                    progress.Value = Math.Max(
-                        0,
-                        Math.Min(
-                            100,
-                            (int)percentage));
-                }
-                else
+            if (item.State == "Paused")
+            {
+                menu.Items.Add("▶️ Resume", null, async (s, ev) =>
                 {
-                    progress.Value = 0;
-                }
-            }));
+                    try
+                    {
+                        item.State = "Downloading";
+                        UpdateActionButton(item);
+
+                        await item.ResumeAsync();
+
+                        status.Text = "Download completed";
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // cancelled
+                    }
+                    catch (Exception ex)
+                    {
+                        item.State = "Error";
+                        status.Text = "Error: " + ex.Message;
+                    }
+
+                    DownloadStore.Save(items);
+                });
+            }
+
+            if (item.State != "Completed" &&
+                item.State != "Cancelled")
+            {
+                menu.Items.Add("❌ Cancel", null, (s, ev) =>
+                {
+                    item.Cancel();
+                    UpdateActionButton(item);
+                    DownloadStore.Save(items);
+                });
+            }
+
+            if (item.State == "Completed" ||
+                item.State == "Cancelled" ||
+                item.State == "Error")
+            {
+                menu.Items.Add("🗑 Remove from list", null, (s, ev) =>
+                {
+                    items.Remove(item);
+                    grid.Rows.RemoveAt(item.Row);
+
+                    // Fix row numbers
+                    for (int i = 0; i < items.Count; i++)
+                        items[i].Row = i;
+
+                    DownloadStore.Save(items);
+                });
+            }
+
+            if (menu.Items.Count > 0)
+                menu.Show(grid, grid.PointToClient(Cursor.Position));
         }
 
-        void SelectedPause()
+        void UpdateActionButton(DownloadItem item)
         {
-            if (grid.SelectedRows.Count == 0)
+            if (item.Row < 0 || item.Row >= grid.Rows.Count)
                 return;
 
-            var x =
-                items[grid.SelectedRows[0].Index];
+            string text = "";
 
-            x.Pause();
+            switch (item.State)
+            {
+                case "Downloading":
+                    text = "⏸ Pause  |  ❌ Cancel";
+                    break;
+                case "Paused":
+                    text = "▶️ Resume  |  ❌ Cancel";
+                    break;
+                case "Completed":
+                    text = "✅ Done  |  🗑 Remove";
+                    break;
+                case "Cancelled":
+                    text = "❌ Cancelled  |  🗑 Remove";
+                    break;
+                case "Error":
+                    text = "⚠️ Error  |  🗑 Remove";
+                    break;
+                default:
+                    text = "⏳ Waiting";
+                    break;
+            }
 
-            RefreshRow(x);
+            grid.Rows[item.Row].Cells["actions"].Value = text;
         }
 
-        async Task SelectedResume()
+        // ============================================
+        // Convert bytes to readable units
+        // ============================================
+        public static string FormatBytes(long n)
         {
-            if (grid.SelectedRows.Count == 0)
-                return;
+            if (n < 0) return "?";
 
-            var x =
-                items[grid.SelectedRows[0].Index];
-
-            if (x.State != "Paused")
-                return;
-
-            try
-            {
-                await x.ResumeAsync(
-                    () => RefreshRow(x));
-
-                status.Text = "Completed";
-            }
-            catch (OperationCanceledException)
-            {
-                status.Text = "Paused";
-            }
-            catch (Exception ex)
-            {
-                status.Text = ex.Message;
-
-                x.State = "Error";
-
-                RefreshRow(x);
-            }
-        }
-
-        static string FormatBytes(long n)
-        {
             if (n < 1024)
                 return n + " B";
 
@@ -355,335 +473,13 @@ namespace SepDownloadManager
 
             return (x / 1024).ToString("0.00") + " GB";
         }
-    }
 
-    public class DownloadItem
-    {
-        public readonly Uri Url;
-        public readonly string OutputPath;
-        public readonly int Parts;
-
-        public int Row = -1;
-
-        public long Total = -1;
-        public long Downloaded;
-
-        public double Speed;
-
-        public string State = "Queued";
-
-        CancellationTokenSource cts;
-
-        DateTime lastTime = DateTime.UtcNow;
-        long lastBytes;
-
-        public DownloadItem(
-            Uri url,
-            string outputPath,
-            int parts)
+        protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            Url = url;
-            OutputPath = outputPath;
-            Parts = parts;
-        }
+            // Save status before closing
+            DownloadStore.Save(items);
 
-        public async Task StartAsync(Action update)
-        {
-            cts = new CancellationTokenSource();
-
-            State = "Downloading";
-
-            update();
-
-            using (var client = new HttpClient())
-            {
-                client.Timeout =
-                    TimeSpan.FromMinutes(30);
-
-                using (var head =
-                    new HttpRequestMessage(
-                        HttpMethod.Head,
-                        Url))
-                using (var hr =
-                    await client.SendAsync(
-                        head,
-                        HttpCompletionOption.ResponseHeadersRead,
-                        cts.Token))
-                {
-                    if (!hr.IsSuccessStatusCode)
-                    {
-                        throw new Exception(
-                            "Server rejected request: " +
-                            hr.StatusCode);
-                    }
-
-                    Total =
-                        hr.Content.Headers.ContentLength
-                        ?? -1;
-                }
-            }
-
-            if (Total <= 0 || Parts == 1)
-            {
-                await SingleDownload(update);
-            }
-            else
-            {
-                await MultiDownload(update);
-            }
-        }
-
-        async Task SingleDownload(Action update)
-        {
-            using (var client = new HttpClient())
-            using (var response =
-                await client.GetAsync(
-                    Url,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cts.Token))
-            {
-                response.EnsureSuccessStatusCode();
-
-                using (var input =
-                    await response.Content.ReadAsStreamAsync())
-                using (var output =
-                    new FileStream(
-                        OutputPath,
-                        FileMode.Create,
-                        FileAccess.Write,
-                        FileShare.Read))
-                {
-                    byte[] buffer =
-                        new byte[64 * 1024];
-
-                    int read;
-
-                    while ((read =
-                        await input.ReadAsync(
-                            buffer,
-                            0,
-                            buffer.Length,
-                            cts.Token)) > 0)
-                    {
-                        await output.WriteAsync(
-                            buffer,
-                            0,
-                            read,
-                            cts.Token);
-
-                        Downloaded += read;
-
-                        UpdateSpeed();
-
-                        update();
-                    }
-                }
-            }
-
-            State = "Completed";
-
-            update();
-        }
-
-        async Task MultiDownload(Action update)
-        {
-            string tempDir =
-                OutputPath + ".parts";
-
-            Directory.CreateDirectory(tempDir);
-
-            var tasks = new List<Task>();
-
-            long chunk =
-                Total / Parts;
-
-            for (int i = 0; i < Parts; i++)
-            {
-                long start =
-                    i * chunk;
-
-                long end =
-                    (i == Parts - 1)
-                        ? Total - 1
-                        : start + chunk - 1;
-
-                int index = i;
-
-                tasks.Add(
-                    Task.Run(
-                        () => DownloadPart(
-                            start,
-                            end,
-                            index,
-                            tempDir,
-                            update),
-                        cts.Token));
-            }
-
-            await Task.WhenAll(tasks);
-
-            cts.Token.ThrowIfCancellationRequested();
-
-            using (var output =
-                new FileStream(
-                    OutputPath,
-                    FileMode.Create,
-                    FileAccess.Write))
-            {
-                for (int i = 0; i < Parts; i++)
-                {
-                    string partPath =
-                        System.IO.Path.Combine(
-                            tempDir,
-                            i + ".part");
-
-                    using (var input =
-                        new FileStream(
-                            partPath,
-                            FileMode.Open,
-                            FileAccess.Read))
-                    {
-                        await input.CopyToAsync(
-                            output);
-                    }
-
-                    File.Delete(partPath);
-                }
-            }
-
-            Directory.Delete(
-                tempDir,
-                true);
-
-            State = "Completed";
-
-            update();
-        }
-
-        async Task DownloadPart(
-            long start,
-            long end,
-            int index,
-            string tempDir,
-            Action update)
-        {
-            using (var client = new HttpClient())
-            {
-                var req =
-                    new HttpRequestMessage(
-                        HttpMethod.Get,
-                        Url);
-
-                req.Headers.Range =
-                    new System.Net.Http.Headers
-                        .RangeHeaderValue(
-                            start,
-                            end);
-
-                using (var res =
-                    await client.SendAsync(
-                        req,
-                        HttpCompletionOption.ResponseHeadersRead,
-                        cts.Token))
-                {
-                    if ((int)res.StatusCode != 206)
-                    {
-                        throw new Exception(
-                            "Server does not support " +
-                            "multi-part downloads.");
-                    }
-
-                    string partPath =
-                        System.IO.Path.Combine(
-                            tempDir,
-                            index + ".part");
-
-                    using (var input =
-                        await res.Content
-                            .ReadAsStreamAsync())
-                    using (var output =
-                        new FileStream(
-                            partPath,
-                            FileMode.Create,
-                            FileAccess.Write,
-                            FileShare.Read))
-                    {
-                        byte[] buffer =
-                            new byte[64 * 1024];
-
-                        int read;
-
-                        while ((read =
-                            await input.ReadAsync(
-                                buffer,
-                                0,
-                                buffer.Length,
-                                cts.Token)) > 0)
-                        {
-                            await output.WriteAsync(
-                                buffer,
-                                0,
-                                read,
-                                cts.Token);
-
-                            Interlocked.Add(
-                                ref Downloaded,
-                                read);
-
-                            UpdateSpeed();
-
-                            update();
-                        }
-                    }
-                }
-            }
-        }
-
-        void UpdateSpeed()
-        {
-            var now = DateTime.UtcNow;
-
-            double seconds =
-                (now - lastTime).TotalSeconds;
-
-            if (seconds >= 0.5)
-            {
-                Speed =
-                    (Downloaded - lastBytes)
-                    / seconds;
-
-                lastBytes =
-                    Downloaded;
-
-                lastTime = now;
-            }
-        }
-
-        public void Pause()
-        {
-            if (cts != null &&
-                State == "Downloading")
-            {
-                State = "Paused";
-
-                cts.Cancel();
-            }
-        }
-
-        public async Task ResumeAsync(
-            Action update)
-        {
-            // v1:
-            // Resume دوباره از ابتدا شروع می‌شود.
-
-            Downloaded = 0;
-            Speed = 0;
-            lastBytes = 0;
-            lastTime = DateTime.UtcNow;
-
-            State = "Downloading";
-
-            await StartAsync(update);
+            base.OnFormClosing(e);
         }
     }
 }
