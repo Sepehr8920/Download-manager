@@ -4,7 +4,7 @@ using System.Text;
 
 namespace SepDownloadManager
 {
-    // Saves user settings like max connections
+    // Saves user settings
     public static class AppSettings
     {
         static string SettingsPath =>
@@ -14,38 +14,70 @@ namespace SepDownloadManager
                 "SepDownloadManager",
                 "settings.txt");
 
-        // Default: 8 connections
+        // Max parts per download (default 8)
         public static int MaxConnections
         {
-            get
+            get => ReadValue("parts", 8, 1, 16);
+            set => WriteValue("parts", Math.Max(1, Math.Min(16, value)));
+        }
+
+        // Max simultaneous downloads (default 2)
+        public static int MaxSimultaneous
+        {
+            get => ReadValue("simul", 2, 1, 10);
+            set => WriteValue("simul", Math.Max(1, Math.Min(10, value)));
+        }
+
+        // ------- simple key=value store -------
+
+        static int ReadValue(string key, int def, int min, int max)
+        {
+            try
             {
-                try
+                if (File.Exists(SettingsPath))
                 {
-                    if (File.Exists(SettingsPath))
+                    foreach (var line in File.ReadAllLines(SettingsPath, Encoding.UTF8))
                     {
-                        var text = File.ReadAllText(SettingsPath, Encoding.UTF8);
-                        if (int.TryParse(text.Trim(), out int val) &&
-                            val >= 1 && val <= 16)
-                            return val;
+                        var p = line.Split('=');
+                        if (p.Length == 2 && p[0] == key &&
+                            int.TryParse(p[1], out int v) &&
+                            v >= min && v <= max)
+                            return v;
                     }
                 }
-                catch { }
-
-                return 8;
             }
-            set
+            catch { }
+            return def;
+        }
+
+        static void WriteValue(string key, int value)
+        {
+            try
             {
-                try
-                {
-                    string dir = Path.GetDirectoryName(SettingsPath);
-                    if (!Directory.Exists(dir))
-                        Directory.CreateDirectory(dir);
+                string dir = Path.GetDirectoryName(SettingsPath);
+                if (!Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
 
-                    int v = Math.Max(1, Math.Min(16, value));
-                    File.WriteAllText(SettingsPath, v.ToString(), Encoding.UTF8);
+                var dict = new System.Collections.Generic.Dictionary<string, string>();
+
+                if (File.Exists(SettingsPath))
+                {
+                    foreach (var line in File.ReadAllLines(SettingsPath, Encoding.UTF8))
+                    {
+                        var p = line.Split('=');
+                        if (p.Length == 2) dict[p[0]] = p[1];
+                    }
                 }
-                catch { }
+
+                dict[key] = value.ToString();
+
+                var sb = new StringBuilder();
+                foreach (var kv in dict)
+                    sb.AppendLine(kv.Key + "=" + kv.Value);
+
+                File.WriteAllText(SettingsPath, sb.ToString(), Encoding.UTF8);
             }
+            catch { }
         }
     }
 }
