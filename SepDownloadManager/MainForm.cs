@@ -26,7 +26,6 @@ namespace SepDownloadManager
             MinimumSize = new Size(900, 500);
             StartPosition = FormStartPosition.CenterScreen;
 
-            // ---------- Top bar ----------
             var top = new Panel
             {
                 Dock = DockStyle.Top,
@@ -88,7 +87,6 @@ namespace SepDownloadManager
             settingsButton.Click += (s, e) => OpenSettings();
             top.Controls.Add(settingsButton);
 
-            // ---------- Table ----------
             grid = new DataGridView
             {
                 Dock = DockStyle.Fill,
@@ -119,12 +117,10 @@ namespace SepDownloadManager
             grid.Columns.Add(actionCol);
 
             grid.CellClick += Grid_CellClick;
-            grid.CellDoubleClick += Grid_CellDoubleClick;
 
             Controls.Add(grid);
             grid.BringToFront();
 
-            // ---------- Bottom bar ----------
             var bottom = new Panel
             {
                 Dock = DockStyle.Bottom,
@@ -158,7 +154,6 @@ namespace SepDownloadManager
 
             LoadSavedItems();
 
-            // Create the queue manager
             queue = new DownloadQueue(items);
         }
 
@@ -303,11 +298,6 @@ namespace SepDownloadManager
             }
         }
 
-        void Grid_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
-        {
-            // reserved for later (details window)
-        }
-
         void Grid_CellClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0) return;
@@ -316,6 +306,7 @@ namespace SepDownloadManager
             var item = items[e.RowIndex];
             var menu = new ContextMenuStrip();
 
+            // --- Pause (only if downloading) ---
             if (item.State == "Downloading")
             {
                 menu.Items.Add("⏸ Pause", null, (s, ev) =>
@@ -326,6 +317,7 @@ namespace SepDownloadManager
                 });
             }
 
+            // --- Resume (only if paused) ---
             if (item.State == "Paused")
             {
                 menu.Items.Add("▶️ Resume", null, (s, ev) =>
@@ -336,20 +328,17 @@ namespace SepDownloadManager
                 });
             }
 
-            if (item.State == "In Queue" || item.State == "Waiting")
+            // --- Priority options (always show unless done/cancelled) ---
+            if (item.State != "Completed" && item.State != "Cancelled")
             {
-                menu.Items.Add("⬆️ Move Up Priority", null, (s, ev) =>
+                menu.Items.Add(new ToolStripSeparator());
+
+                menu.Items.Add("🔴 High Priority", null, (s, ev) =>
                 {
                     item.Priority = "High";
                     UpdateActionButton(item);
                     DownloadStore.Save(items);
-                });
-
-                menu.Items.Add("⬇️ Move Down Priority", null, (s, ev) =>
-                {
-                    item.Priority = "Low";
-                    UpdateActionButton(item);
-                    DownloadStore.Save(items);
+                    status.Text = "Priority set to High";
                 });
 
                 menu.Items.Add("🟡 Normal Priority", null, (s, ev) =>
@@ -357,11 +346,23 @@ namespace SepDownloadManager
                     item.Priority = "Normal";
                     UpdateActionButton(item);
                     DownloadStore.Save(items);
+                    status.Text = "Priority set to Normal";
+                });
+
+                menu.Items.Add("🟢 Low Priority", null, (s, ev) =>
+                {
+                    item.Priority = "Low";
+                    UpdateActionButton(item);
+                    DownloadStore.Save(items);
+                    status.Text = "Priority set to Low";
                 });
             }
 
+            // --- Cancel ---
             if (item.State != "Completed" && item.State != "Cancelled")
             {
+                menu.Items.Add(new ToolStripSeparator());
+
                 menu.Items.Add("❌ Cancel", null, (s, ev) =>
                 {
                     item.Cancel();
@@ -370,10 +371,13 @@ namespace SepDownloadManager
                 });
             }
 
+            // --- Remove from list ---
             if (item.State == "Completed" ||
                 item.State == "Cancelled" ||
                 item.State == "Error")
             {
+                menu.Items.Add(new ToolStripSeparator());
+
                 menu.Items.Add("🗑 Remove from list", null, (s, ev) =>
                 {
                     items.Remove(item);
