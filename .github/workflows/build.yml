@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,7 +31,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: SepDownloadManager
-        path: SepDownloadManager/bin/Release/
+        path: SepDownloadManager/bin/Release/net48/SepDownloadManager.exe
 
     - name: Create Release
       if: github.ref == 'refs/heads/main'
@@ -36,6 +39,6 @@ jobs:
       with:
         tag_name: v2.${{ github.run_number }}
         name: Release v2.${{ github.run_number }}
-        files: SepDownloadManager/bin/Release/SepDownloadManager.exe
+        files: SepDownloadManager/bin/Release/net48/SepDownloadManager.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
