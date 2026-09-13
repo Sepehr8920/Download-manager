@@ -10,15 +10,12 @@ namespace SepDownloadManager
     {
         TextBox urlBox, fileBox;
         NumericUpDown partsBox;
-        Button addButton;
+        Button addButton, settingsButton;
         ProgressBar progress;
         Label status;
         DataGridView grid;
 
-        // List of all downloads
         readonly List<DownloadItem> items = new List<DownloadItem>();
-
-        // Timer to refresh the table
         Timer refreshTimer;
 
         public MainForm()
@@ -38,7 +35,6 @@ namespace SepDownloadManager
             };
             Controls.Add(top);
 
-            // URL box
             urlBox = new TextBox
             {
                 Left = 10,
@@ -57,7 +53,6 @@ namespace SepDownloadManager
                 ForeColor = SystemColors.GrayText
             });
 
-            // Parts count
             partsBox = new NumericUpDown
             {
                 Left = 580,
@@ -65,7 +60,7 @@ namespace SepDownloadManager
                 Width = 75,
                 Minimum = 1,
                 Maximum = 16,
-                Value = 4
+                Value = AppSettings.MaxConnections
             };
             top.Controls.Add(partsBox);
 
@@ -77,7 +72,6 @@ namespace SepDownloadManager
                 AutoSize = true
             });
 
-            // Save folder box
             fileBox = new TextBox
             {
                 Left = 10,
@@ -90,17 +84,27 @@ namespace SepDownloadManager
             };
             top.Controls.Add(fileBox);
 
-            // Start download button
             addButton = new Button
             {
                 Left = 580,
                 Top = 43,
-                Width = 155,
+                Width = 100,
                 Height = 28,
                 Text = "Start Download"
             };
             addButton.Click += (s, e) => AddDownload();
             top.Controls.Add(addButton);
+
+            settingsButton = new Button
+            {
+                Left = 685,
+                Top = 43,
+                Width = 70,
+                Height = 28,
+                Text = "Settings"
+            };
+            settingsButton.Click += (s, e) => OpenSettings();
+            top.Controls.Add(settingsButton);
 
             // ---------- Table ----------
             grid = new DataGridView
@@ -122,7 +126,6 @@ namespace SepDownloadManager
             grid.Columns.Add("speed", "Speed");
             grid.Columns.Add("state", "Status");
 
-            // Action column (buttons)
             var actionCol = new DataGridViewButtonColumn
             {
                 Name = "actions",
@@ -164,19 +167,26 @@ namespace SepDownloadManager
             };
             bottom.Controls.Add(status);
 
-            // ---------- Refresh timer ----------
             refreshTimer = new Timer();
-            refreshTimer.Interval = 500; // every half second
+            refreshTimer.Interval = 500;
             refreshTimer.Tick += (s, e) => RefreshAllRows();
             refreshTimer.Start();
 
-            // ---------- Load previous list ----------
             LoadSavedItems();
         }
 
-        // ============================================
-        // Load saved downloads
-        // ============================================
+        void OpenSettings()
+        {
+            using (var dlg = new SettingsForm())
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                {
+                    partsBox.Value = AppSettings.MaxConnections;
+                    status.Text = $"Max connections set to {AppSettings.MaxConnections}";
+                }
+            }
+        }
+
         void LoadSavedItems()
         {
             var saved = DownloadStore.LoadAll();
@@ -191,7 +201,6 @@ namespace SepDownloadManager
                 item.Downloaded = s.Downloaded;
                 item.Total = s.Total;
 
-                // If it was closed mid-download, mark as paused
                 if (s.State == "Downloading")
                     item.State = "Paused";
                 else
@@ -217,9 +226,6 @@ namespace SepDownloadManager
                 status.Text = $"{items.Count} download(s) loaded";
         }
 
-        // ============================================
-        // Start a new download
-        // ============================================
         async void AddDownload()
         {
             if (!Uri.TryCreate(
@@ -245,22 +251,18 @@ namespace SepDownloadManager
             Directory.CreateDirectory(dir);
 
             string name = Path.GetFileName(uri.LocalPath);
-
             if (string.IsNullOrWhiteSpace(name))
                 name = "download.bin";
 
             string outputPath = Path.Combine(dir, name);
 
-            // If this file was downloaded before, rename
             int counter = 1;
             string baseName = Path.GetFileNameWithoutExtension(name);
             string ext = Path.GetExtension(name);
 
             while (File.Exists(outputPath))
             {
-                outputPath = Path.Combine(
-                    dir,
-                    $"{baseName} ({counter}){ext}");
+                outputPath = Path.Combine(dir, $"{baseName} ({counter}){ext}");
                 counter++;
             }
 
@@ -277,13 +279,12 @@ namespace SepDownloadManager
                 "0 B",
                 "?",
                 "-",
-                "Starting...");
+                "In Progress");
 
             item.Row = row;
             UpdateActionButton(item);
 
             urlBox.Clear();
-
             DownloadStore.Save(items);
 
             try
@@ -291,10 +292,7 @@ namespace SepDownloadManager
                 await item.StartAsync();
                 status.Text = "Download completed";
             }
-            catch (OperationCanceledException)
-            {
-                // User paused or cancelled
-            }
+            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 item.State = "Error";
@@ -304,27 +302,18 @@ namespace SepDownloadManager
             DownloadStore.Save(items);
         }
 
-        // ============================================
-        // Refresh all rows
-        // ============================================
         void RefreshAllRows()
         {
-            if (IsDisposed || !IsHandleCreated)
-                return;
+            if (IsDisposed || !IsHandleCreated) return;
 
             foreach (var item in items)
             {
-                if (item.Row < 0 || item.Row >= grid.Rows.Count)
-                    continue;
+                if (item.Row < 0 || item.Row >= grid.Rows.Count) continue;
 
                 var row = grid.Rows[item.Row];
 
-                row.Cells[1].Value = item.Total > 0
-                    ? FormatBytes(item.Total)
-                    : "?";
-
+                row.Cells[1].Value = item.Total > 0 ? FormatBytes(item.Total) : "?";
                 row.Cells[2].Value = FormatBytes(item.Downloaded);
-
                 row.Cells[3].Value = item.Total > 0
                     ? FormatBytes(item.Total - item.Downloaded)
                     : "?";
@@ -337,17 +326,12 @@ namespace SepDownloadManager
             }
         }
 
-        // ============================================
-        // Click on action buttons
-        // ============================================
         void Grid_CellClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0) return;
             if (e.ColumnIndex != grid.Columns["actions"].Index) return;
 
             var item = items[e.RowIndex];
-
-            // Open a small menu
             var menu = new ContextMenuStrip();
 
             if (item.State == "Downloading")
@@ -370,13 +354,9 @@ namespace SepDownloadManager
                         UpdateActionButton(item);
 
                         await item.ResumeAsync();
-
                         status.Text = "Download completed";
                     }
-                    catch (OperationCanceledException)
-                    {
-                        // cancelled
-                    }
+                    catch (OperationCanceledException) { }
                     catch (Exception ex)
                     {
                         item.State = "Error";
@@ -387,8 +367,7 @@ namespace SepDownloadManager
                 });
             }
 
-            if (item.State != "Completed" &&
-                item.State != "Cancelled")
+            if (item.State != "Completed" && item.State != "Cancelled")
             {
                 menu.Items.Add("❌ Cancel", null, (s, ev) =>
                 {
@@ -406,11 +385,8 @@ namespace SepDownloadManager
                 {
                     items.Remove(item);
                     grid.Rows.RemoveAt(item.Row);
-
-                    // Fix row numbers
                     for (int i = 0; i < items.Count; i++)
                         items[i].Row = i;
-
                     DownloadStore.Save(items);
                 });
             }
@@ -421,10 +397,9 @@ namespace SepDownloadManager
 
         void UpdateActionButton(DownloadItem item)
         {
-            if (item.Row < 0 || item.Row >= grid.Rows.Count)
-                return;
+            if (item.Row < 0 || item.Row >= grid.Rows.Count) return;
 
-            string text = "";
+            string text;
 
             switch (item.State)
             {
@@ -444,41 +419,31 @@ namespace SepDownloadManager
                     text = "⚠️ Error  |  🗑 Remove";
                     break;
                 default:
-                    text = "⏳ Waiting";
+                    text = "⏳ In Progress";
                     break;
             }
 
             grid.Rows[item.Row].Cells["actions"].Value = text;
         }
 
-        // ============================================
-        // Convert bytes to readable units
-        // ============================================
         public static string FormatBytes(long n)
         {
             if (n < 0) return "?";
 
-            if (n < 1024)
-                return n + " B";
+            if (n < 1024) return n + " B";
 
             double x = n / 1024.0;
-
-            if (x < 1024)
-                return x.ToString("0.0") + " KB";
+            if (x < 1024) return x.ToString("0.0") + " KB";
 
             x /= 1024;
-
-            if (x < 1024)
-                return x.ToString("0.0") + " MB";
+            if (x < 1024) return x.ToString("0.0") + " MB";
 
             return (x / 1024).ToString("0.00") + " GB";
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            // Save status before closing
             DownloadStore.Save(items);
-
             base.OnFormClosing(e);
         }
     }
