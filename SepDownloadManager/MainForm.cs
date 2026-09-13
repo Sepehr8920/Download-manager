@@ -9,7 +9,6 @@ namespace SepDownloadManager
     public class MainForm : Form
     {
         TextBox urlBox, fileBox;
-        NumericUpDown partsBox;
         Button addButton, settingsButton;
         ProgressBar progress;
         Label status;
@@ -17,6 +16,7 @@ namespace SepDownloadManager
 
         readonly List<DownloadItem> items = new List<DownloadItem>();
         Timer refreshTimer;
+        DownloadQueue queue;
 
         public MainForm()
         {
@@ -39,7 +39,7 @@ namespace SepDownloadManager
             {
                 Left = 10,
                 Top = 10,
-                Width = 560,
+                Width = 660,
                 Font = new Font("Segoe UI", 9)
             };
             top.Controls.Add(urlBox);
@@ -53,30 +53,11 @@ namespace SepDownloadManager
                 ForeColor = SystemColors.GrayText
             });
 
-            partsBox = new NumericUpDown
-            {
-                Left = 580,
-                Top = 10,
-                Width = 75,
-                Minimum = 1,
-                Maximum = 16,
-                Value = AppSettings.MaxConnections
-            };
-            top.Controls.Add(partsBox);
-
-            top.Controls.Add(new Label
-            {
-                Left = 660,
-                Top = 13,
-                Text = "Parts",
-                AutoSize = true
-            });
-
             fileBox = new TextBox
             {
                 Left = 10,
                 Top = 45,
-                Width = 560,
+                Width = 660,
                 Text = Path.Combine(
                     Environment.GetFolderPath(
                         Environment.SpecialFolder.UserProfile),
@@ -86,21 +67,22 @@ namespace SepDownloadManager
 
             addButton = new Button
             {
-                Left = 580,
-                Top = 43,
-                Width = 100,
-                Height = 28,
-                Text = "Start Download"
+                Left = 685,
+                Top = 10,
+                Width = 120,
+                Height = 60,
+                Text = "Start\nDownload",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
             addButton.Click += (s, e) => AddDownload();
             top.Controls.Add(addButton);
 
             settingsButton = new Button
             {
-                Left = 685,
-                Top = 43,
-                Width = 70,
-                Height = 28,
+                Left = 815,
+                Top = 10,
+                Width = 100,
+                Height = 60,
                 Text = "Settings"
             };
             settingsButton.Click += (s, e) => OpenSettings();
@@ -124,18 +106,20 @@ namespace SepDownloadManager
             grid.Columns.Add("downloaded", "Downloaded");
             grid.Columns.Add("remaining", "Remaining");
             grid.Columns.Add("speed", "Speed");
+            grid.Columns.Add("priority", "Priority");
             grid.Columns.Add("state", "Status");
 
             var actionCol = new DataGridViewButtonColumn
             {
                 Name = "actions",
                 HeaderText = "Actions",
-                Width = 220,
+                Width = 200,
                 FlatStyle = FlatStyle.Flat
             };
             grid.Columns.Add(actionCol);
 
             grid.CellClick += Grid_CellClick;
+            grid.CellDoubleClick += Grid_CellDoubleClick;
 
             Controls.Add(grid);
             grid.BringToFront();
@@ -173,6 +157,9 @@ namespace SepDownloadManager
             refreshTimer.Start();
 
             LoadSavedItems();
+
+            // Create the queue manager
+            queue = new DownloadQueue(items);
         }
 
         void OpenSettings()
@@ -181,8 +168,9 @@ namespace SepDownloadManager
             {
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
-                    partsBox.Value = AppSettings.MaxConnections;
-                    status.Text = $"Max connections set to {AppSettings.MaxConnections}";
+                    status.Text =
+                        $"Parts: {AppSettings.MaxConnections}   |   " +
+                        $"Simultaneous: {AppSettings.MaxSimultaneous}";
                 }
             }
         }
@@ -200,6 +188,7 @@ namespace SepDownloadManager
 
                 item.Downloaded = s.Downloaded;
                 item.Total = s.Total;
+                item.Priority = s.Priority ?? "Normal";
 
                 if (s.State == "Downloading")
                     item.State = "Paused";
@@ -212,10 +201,9 @@ namespace SepDownloadManager
                     Path.GetFileName(s.OutputPath),
                     item.Total > 0 ? FormatBytes(item.Total) : "?",
                     FormatBytes(item.Downloaded),
-                    item.Total > 0
-                        ? FormatBytes(item.Total - item.Downloaded)
-                        : "?",
+                    item.Total > 0 ? FormatBytes(item.Total - item.Downloaded) : "?",
                     "-",
+                    item.Priority,
                     item.State);
 
                 item.Row = row;
@@ -226,7 +214,7 @@ namespace SepDownloadManager
                 status.Text = $"{items.Count} download(s) loaded";
         }
 
-        async void AddDownload()
+        void AddDownload()
         {
             if (!Uri.TryCreate(
                     urlBox.Text.Trim(),
@@ -269,7 +257,10 @@ namespace SepDownloadManager
             var item = new DownloadItem(
                 uri,
                 outputPath,
-                (int)partsBox.Value);
+                AppSettings.MaxConnections);
+
+            item.State = "In Queue";
+            item.Priority = "Normal";
 
             items.Add(item);
 
@@ -279,7 +270,8 @@ namespace SepDownloadManager
                 "0 B",
                 "?",
                 "-",
-                "In Progress");
+                item.Priority,
+                item.State);
 
             item.Row = row;
             UpdateActionButton(item);
@@ -287,19 +279,7 @@ namespace SepDownloadManager
             urlBox.Clear();
             DownloadStore.Save(items);
 
-            try
-            {
-                await item.StartAsync();
-                status.Text = "Download completed";
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                item.State = "Error";
-                status.Text = "Error: " + ex.Message;
-            }
-
-            DownloadStore.Save(items);
+            status.Text = "Added to queue";
         }
 
         void RefreshAllRows()
@@ -315,15 +295,17 @@ namespace SepDownloadManager
                 row.Cells[1].Value = item.Total > 0 ? FormatBytes(item.Total) : "?";
                 row.Cells[2].Value = FormatBytes(item.Downloaded);
                 row.Cells[3].Value = item.Total > 0
-                    ? FormatBytes(item.Total - item.Downloaded)
-                    : "?";
-
+                    ? FormatBytes(item.Total - item.Downloaded) : "?";
                 row.Cells[4].Value = item.Speed > 0
-                    ? FormatBytes((long)item.Speed) + "/s"
-                    : "-";
-
-                row.Cells[5].Value = item.State;
+                    ? FormatBytes((long)item.Speed) + "/s" : "-";
+                row.Cells[5].Value = item.Priority;
+                row.Cells[6].Value = item.State;
             }
+        }
+
+        void Grid_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            // reserved for later (details window)
         }
 
         void Grid_CellClick(object sender, DataGridViewCellEventArgs e)
@@ -346,23 +328,34 @@ namespace SepDownloadManager
 
             if (item.State == "Paused")
             {
-                menu.Items.Add("▶️ Resume", null, async (s, ev) =>
+                menu.Items.Add("▶️ Resume", null, (s, ev) =>
                 {
-                    try
-                    {
-                        item.State = "Downloading";
-                        UpdateActionButton(item);
+                    item.State = "In Queue";
+                    UpdateActionButton(item);
+                    DownloadStore.Save(items);
+                });
+            }
 
-                        await item.ResumeAsync();
-                        status.Text = "Download completed";
-                    }
-                    catch (OperationCanceledException) { }
-                    catch (Exception ex)
-                    {
-                        item.State = "Error";
-                        status.Text = "Error: " + ex.Message;
-                    }
+            if (item.State == "In Queue" || item.State == "Waiting")
+            {
+                menu.Items.Add("⬆️ Move Up Priority", null, (s, ev) =>
+                {
+                    item.Priority = "High";
+                    UpdateActionButton(item);
+                    DownloadStore.Save(items);
+                });
 
+                menu.Items.Add("⬇️ Move Down Priority", null, (s, ev) =>
+                {
+                    item.Priority = "Low";
+                    UpdateActionButton(item);
+                    DownloadStore.Save(items);
+                });
+
+                menu.Items.Add("🟡 Normal Priority", null, (s, ev) =>
+                {
+                    item.Priority = "Normal";
+                    UpdateActionButton(item);
                     DownloadStore.Save(items);
                 });
             }
@@ -409,6 +402,10 @@ namespace SepDownloadManager
                 case "Paused":
                     text = "▶️ Resume  |  ❌ Cancel";
                     break;
+                case "In Queue":
+                case "Waiting":
+                    text = "⏳ In Queue  |  ❌ Cancel";
+                    break;
                 case "Completed":
                     text = "✅ Done  |  🗑 Remove";
                     break;
@@ -419,11 +416,13 @@ namespace SepDownloadManager
                     text = "⚠️ Error  |  🗑 Remove";
                     break;
                 default:
-                    text = "⏳ In Progress";
+                    text = "⏳ " + item.State;
                     break;
             }
 
             grid.Rows[item.Row].Cells["actions"].Value = text;
+            grid.Rows[item.Row].Cells["priority"].Value = item.Priority;
+            grid.Rows[item.Row].Cells["state"].Value = item.State;
         }
 
         public static string FormatBytes(long n)
