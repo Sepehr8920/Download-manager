@@ -5,8 +5,6 @@ using System.Text;
 
 namespace SepDownloadManager
 {
-    // This class saves the download list to a simple text file,
-    // so it remembers them the next time you open the app
     public class SavedDownload
     {
         public string Url;
@@ -15,6 +13,7 @@ namespace SepDownloadManager
         public long Total;
         public long Downloaded;
         public string State;
+        public string Priority = "Normal";
     }
 
     public static class DownloadStore
@@ -38,22 +37,19 @@ namespace SepDownloadManager
 
                 foreach (var item in items)
                 {
-                    // Format: one download per line, separated by |
                     sb.AppendLine(string.Join("|",
                         item.Url.ToString(),
                         item.OutputPath,
                         item.Parts.ToString(),
                         item.Total.ToString(),
                         item.Downloaded.ToString(),
-                        item.State));
+                        item.State,
+                        item.Priority));
                 }
 
                 File.WriteAllText(StorePath, sb.ToString(), Encoding.UTF8);
             }
-            catch
-            {
-                // Ignore if save fails
-            }
+            catch { }
         }
 
         public static List<SavedDownload> LoadAll()
@@ -84,14 +80,12 @@ namespace SepDownloadManager
                         Parts = int.Parse(p[2]),
                         Total = long.Parse(p[3]),
                         Downloaded = long.Parse(p[4]),
-                        State = p[5]
+                        State = p[5],
+                        Priority = p.Length >= 7 ? p[6] : "Normal"
                     });
                 }
             }
-            catch
-            {
-                // If reading fails, return empty list
-            }
+            catch { }
 
             return list;
         }
