@@ -20,14 +20,14 @@ namespace SepDownloadManager
         public double Speed;
 
         public string State = "Waiting";
+        public string Priority = "Normal"; // High / Normal / Low
 
         CancellationTokenSource cts;
 
-        // Speed smoothing
         DateTime lastTime = DateTime.UtcNow;
         long lastBytes;
         readonly Queue<double> speedHistory = new Queue<double>();
-        const int SpeedHistorySize = 6; // average over last few samples
+        const int SpeedHistorySize = 6;
 
         string TempDir => OutputPath + ".parts";
 
@@ -38,9 +38,6 @@ namespace SepDownloadManager
             Parts = parts;
         }
 
-        // ============================================
-        // Start download
-        // ============================================
         public async Task StartAsync()
         {
             cts = new CancellationTokenSource();
@@ -72,9 +69,6 @@ namespace SepDownloadManager
             }
         }
 
-        // ============================================
-        // Single-part download
-        // ============================================
         async Task SingleDownload()
         {
             bool resume = File.Exists(OutputPath) && Downloaded > 0;
@@ -103,18 +97,15 @@ namespace SepDownloadManager
                 using (var output = new FileStream(
                     OutputPath,
                     resume ? FileMode.Append : FileMode.Create,
-                    FileAccess.Write,
-                    FileShare.Read,
-                    128 * 1024))
+                    FileAccess.Write, FileShare.Read, 128 * 1024))
                 {
-                    byte[] buffer = new byte[128 * 1024]; // 128 KB buffer
+                    byte[] buffer = new byte[128 * 1024];
                     int read;
 
                     while ((read = await input.ReadAsync(
                         buffer, 0, buffer.Length, cts.Token)) > 0)
                     {
                         await output.WriteAsync(buffer, 0, read, cts.Token);
-
                         Downloaded += read;
                         UpdateSpeed();
                     }
@@ -124,9 +115,6 @@ namespace SepDownloadManager
             State = "Completed";
         }
 
-        // ============================================
-        // Multi-part download
-        // ============================================
         async Task MultiDownload()
         {
             Directory.CreateDirectory(TempDir);
@@ -148,7 +136,6 @@ namespace SepDownloadManager
             await Task.WhenAll(tasks);
             cts.Token.ThrowIfCancellationRequested();
 
-            // Verify total size before merging
             long totalOnDisk = 0;
             for (int i = 0; i < Parts; i++)
             {
@@ -160,9 +147,8 @@ namespace SepDownloadManager
 
             if (totalOnDisk != Total)
                 throw new Exception(
-                    $"Size mismatch: expected {Total} bytes but got {totalOnDisk}. File may be corrupt.");
+                    $"Size mismatch: expected {Total} bytes but got {totalOnDisk}.");
 
-            // Merge parts
             using (var output = new FileStream(
                 OutputPath, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024))
             {
@@ -197,16 +183,10 @@ namespace SepDownloadManager
                     await DownloadPart(start, end, index);
                     return;
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
+                catch (OperationCanceledException) { throw; }
                 catch
                 {
-                    if (attempt == maxRetries - 1)
-                        throw;
-
-                    // Wait before retry
+                    if (attempt == maxRetries - 1) throw;
                     await Task.Delay(2000, cts.Token);
                 }
             }
@@ -215,12 +195,9 @@ namespace SepDownloadManager
         async Task DownloadPart(long start, long end, int index)
         {
             string partPath = Path.Combine(TempDir, index + ".part");
-
             long alreadyDone = File.Exists(partPath)
-                ? new FileInfo(partPath).Length
-                : 0;
+                ? new FileInfo(partPath).Length : 0;
 
-            // Already finished?
             if (alreadyDone >= (end - start + 1))
                 return;
 
@@ -243,18 +220,15 @@ namespace SepDownloadManager
                 using (var output = new FileStream(
                     partPath,
                     alreadyDone > 0 ? FileMode.Append : FileMode.Create,
-                    FileAccess.Write,
-                    FileShare.Read,
-                    128 * 1024))
+                    FileAccess.Write, FileShare.Read, 128 * 1024))
                 {
-                    byte[] buffer = new byte[128 * 1024]; // 128 KB buffer
+                    byte[] buffer = new byte[128 * 1024];
                     int read;
 
                     while ((read = await input.ReadAsync(
                         buffer, 0, buffer.Length, cts.Token)) > 0)
                     {
                         await output.WriteAsync(buffer, 0, read, cts.Token);
-
                         Interlocked.Add(ref Downloaded, read);
                         UpdateSpeed();
                     }
@@ -262,36 +236,25 @@ namespace SepDownloadManager
             }
         }
 
-        // ============================================
-        // Smoothed speed calculation
-        // ============================================
         void UpdateSpeed()
         {
             var now = DateTime.UtcNow;
             double seconds = (now - lastTime).TotalSeconds;
-
             if (seconds < 0.5) return;
 
             double current = (Downloaded - lastBytes) / seconds;
-
             lastBytes = Downloaded;
             lastTime = now;
 
-            // Keep a small history and average it
             speedHistory.Enqueue(current);
             while (speedHistory.Count > SpeedHistorySize)
                 speedHistory.Dequeue();
 
             double sum = 0;
-            foreach (var s in speedHistory)
-                sum += s;
-
+            foreach (var s in speedHistory) sum += s;
             Speed = sum / speedHistory.Count;
         }
 
-        // ============================================
-        // Pause
-        // ============================================
         public void Pause()
         {
             if (cts != null && State == "Downloading")
@@ -303,36 +266,25 @@ namespace SepDownloadManager
             }
         }
 
-        // ============================================
-        // Resume
-        // ============================================
         public async Task ResumeAsync()
         {
             lastBytes = Downloaded;
             lastTime = DateTime.UtcNow;
             speedHistory.Clear();
-
             await StartAsync();
         }
 
-        // ============================================
-        // Cancel
-        // ============================================
         public void Cancel()
         {
-            if (cts != null)
-                cts.Cancel();
+            if (cts != null) cts.Cancel();
 
             State = "Cancelled";
             Speed = 0;
 
             try
             {
-                if (File.Exists(OutputPath))
-                    File.Delete(OutputPath);
-
-                if (Directory.Exists(TempDir))
-                    Directory.Delete(TempDir, true);
+                if (File.Exists(OutputPath)) File.Delete(OutputPath);
+                if (Directory.Exists(TempDir)) Directory.Delete(TempDir, true);
             }
             catch { }
         }
