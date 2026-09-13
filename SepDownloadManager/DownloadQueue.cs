@@ -6,7 +6,6 @@ using System.Windows.Forms;
 
 namespace SepDownloadManager
 {
-    // Manages the queue and priority of downloads
     public class DownloadQueue
     {
         readonly List<DownloadItem> items;
@@ -17,22 +16,21 @@ namespace SepDownloadManager
             this.items = items;
 
             checkTimer = new Timer();
-            checkTimer.Interval = 1000; // every second
+            checkTimer.Interval = 1500; // 1.5 seconds
             checkTimer.Tick += (s, e) => Tick();
             checkTimer.Start();
         }
 
         void Tick()
         {
-            // How many are downloading right now?
             int active = items.Count(i => i.State == "Downloading");
 
             if (active >= AppSettings.MaxSimultaneous)
                 return;
 
-            // Find items that are waiting to start
+            // Waiting items, sorted by priority (High first)
             var waiting = items
-                .Where(i => i.State == "Waiting" || i.State == "In Queue")
+                .Where(i => i.State == "In Queue" || i.State == "Waiting")
                 .OrderByDescending(i => PriorityValue(i.Priority))
                 .ToList();
 
@@ -64,10 +62,9 @@ namespace SepDownloadManager
                 await item.StartAsync();
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex)
+            catch
             {
                 item.State = "Error";
-                // log if needed
             }
         }
     }
